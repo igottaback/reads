@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: discord-api-endpoint
+    env: python
+    buildCommand: ""
+    startCommand: python server.py
+    plan: free
+    envVars:
+      - key: FLASK_ENV
+        value: production
