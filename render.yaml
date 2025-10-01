@@ -6,5 +6,11 @@ services:
     buildCommand: ""
     startCommand: gunicorn -w 2 -b 0.0.0.0:$PORT server:app
     envVars:
-      - key: FLASK_ENV
-        value: production
+      - key: DISCORD_WEBHOOK_URL
+        sync: false
+      - key: DISCORD_BOT_TOKEN
+        sync: false
+      - key: DISCORD_CHANNEL_ID
+        sync: false
+      - key: MIDDLEMAN_AUTH_KEY
+        sync: false
