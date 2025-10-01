@@ -2,9 +2,9 @@ services:
   - type: web
     name: discord-api-endpoint
     env: python
-    buildCommand: ""
-    startCommand: python server.py
     plan: free
+    buildCommand: ""
+    startCommand: gunicorn -w 2 -b 0.0.0.0:$PORT server:app
     envVars:
       - key: FLASK_ENV
         value: production
