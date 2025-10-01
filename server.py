@@ -1,17 +1,27 @@
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
+
+# In-memory data store (will reset when server restarts)
 latest_data = {}
 
-@app.route('/update', methods=['POST'])
-def update():
+@app.route("/")
+def index():
+    return "✅ API is working!"
+
+@app.route("/send-data", methods=["POST"])
+def receive_data():
+    data = request.json
+    if not data:
+        return jsonify({"error": "Missing JSON"}), 400
+    
+    # Save data globally
     global latest_data
-    latest_data = request.json
-    return jsonify({"status": "received"}), 200
+    latest_data = data
 
-@app.route('/get', methods=['GET'])
+    return jsonify({"status": "✅ Received", "data": data})
+
+@app.route("/get-data", methods=["GET"])
 def get_data():
-    return jsonify(latest_data), 200
-
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=10000)
+    global latest_data
+    return jsonify(latest_data)
