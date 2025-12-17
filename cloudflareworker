@@ -1,0 +1,206 @@
+// Cloudflare Worker - bot.gorillabuddies.workers.dev
+// Handles /live for pet data AND /verify for invoice verification
+
+// =======================
+// CONFIGURATION
+// =======================
+const SELLHUB_API_KEY = "83c408a9-37c6-4e13-bee3-5deefa872a48_2nziqj3k8gvsartgkfc9576cnumz2u1l1fxwzcmfepydkdk9lppmsebagvtq4u6c";
+const SELLHUB_API_URL = "https://dash.sellhub.cx/api/sellhub";
+
+// Product variant ID → unlock codes mapping
+const PRODUCT_MAPPING = {
+  // Default Finder (LIFETIME)
+  "ecbca708-d232-4378-a06c-75e385775168": ["df"],
+  
+  // Auto-Joiner (LIFETIME)
+  "8493f52d-4a75-49b7-9c46-b914e334ed9a": ["aj"],
+  
+  // Auto-Hit (Desync, LIFETIME)
+  "5ffb486a-9994-419b-acac-fcd9ace4ad92": ["ah"],
+  
+  // Auto-Joiner + Default Finder
+  "3fe26798-bd4c-48ec-b11b-782c1f6aa9b1": ["aj", "df"],
+  
+  // Auto-Joiner + Anti-Hit
+  "0c1e11dd-292a-45b5-b169-26a21b73e35a": ["aj", "ah"],
+  
+  // Anti-Hit + Default Finder
+  "1faa8669-8d09-4d20-ac1c-039cb96790d8": ["ah", "df"],
+  
+  // All Products Bundle (AH + DF + AJ)
+  "11c3bbfe-4fc7-43db-bfa7-f669bbc30193": ["aj", "df", "ah"],
+};
+
+// =======================
+// KV STORAGE FOR LIVE DATA
+// =======================
+// You need to create a KV namespace called "LIVE_DATA" in Cloudflare dashboard
+// and bind it to this worker
+
+export default {
+  async fetch(request, env, ctx) {
+    const url = new URL(request.url);
+    const path = url.pathname;
+
+    // CORS headers for Roblox
+    const corsHeaders = {
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "GET, PUT, POST, OPTIONS",
+      "Access-Control-Allow-Headers": "Content-Type, Authorization, x-auth-key",
+    };
+
+    // Handle CORS preflight
+    if (request.method === "OPTIONS") {
+      return new Response(null, { headers: corsHeaders });
+    }
+
+    // =======================
+    // /verify - Invoice verification for Pluz Hub
+    // =======================
+    if (path === "/verify") {
+      const invoiceId = url.searchParams.get("invoice");
+
+      if (!invoiceId) {
+        return new Response(JSON.stringify({ valid: false, error: "Missing invoice ID" }), {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      // UUID validation
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      if (!uuidRegex.test(invoiceId)) {
+        return new Response(JSON.stringify({ valid: false, error: "Invalid invoice format" }), {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      try {
+        // Call SellHub API
+        const response = await fetch(`${SELLHUB_API_URL}/invoices/${invoiceId}`, {
+          method: "GET",
+          headers: {
+            "Authorization": SELLHUB_API_KEY,
+            "Content-Type": "application/json",
+          },
+        });
+
+        if (!response.ok) {
+          if (response.status === 404) {
+            return new Response(JSON.stringify({ valid: false, error: "Invoice not found" }), {
+              status: 400,
+              headers: { ...corsHeaders, "Content-Type": "application/json" },
+            });
+          }
+          return new Response(JSON.stringify({ valid: false, error: `API error: ${response.status}` }), {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+
+        const result = await response.json();
+        const data = result.data?.invoice;
+
+        if (!data) {
+          return new Response(JSON.stringify({ valid: false, error: "Invalid API response" }), {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+
+        // Check if paid
+        if (data.status !== "paid" && data.status !== "completed") {
+          return new Response(JSON.stringify({ valid: false, error: `Invoice status: ${data.status}` }), {
+            status: 400,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+
+        // Extract products/unlocks
+        const unlocks = new Set();
+
+        if (data.invoiceItems && Array.isArray(data.invoiceItems)) {
+          for (const item of data.invoiceItems) {
+            if (item.productVariantId && PRODUCT_MAPPING[item.productVariantId]) {
+              PRODUCT_MAPPING[item.productVariantId].forEach(u => unlocks.add(u));
+            }
+          }
+        }
+
+        console.log(`[verify] ✅ Invoice ${invoiceId} - Products: ${Array.from(unlocks).join(", ")}`);
+
+        return new Response(JSON.stringify({
+          valid: true,
+          products: Array.from(unlocks),
+          invoiceId: invoiceId,
+        }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+
+      } catch (err) {
+        console.error("[verify] Error:", err);
+        return new Response(JSON.stringify({ valid: false, error: "Verification service error" }), {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+    }
+
+    // =======================
+    // /live - Pet data storage
+    // =======================
+    if (path === "/live") {
+      // GET - Return stored data
+      if (request.method === "GET") {
+        let data = "";
+        
+        // Try KV storage first
+        if (env.LIVE_DATA) {
+          data = await env.LIVE_DATA.get("servers") || "";
+        }
+        
+        return new Response(data || "-- No data --", {
+          headers: { ...corsHeaders, "Content-Type": "text/plain" },
+        });
+      }
+
+      // PUT/POST - Store data (from your Discord bot)
+      if (request.method === "PUT" || request.method === "POST") {
+        const authKey = request.headers.get("x-auth-key") || request.headers.get("Authorization");
+        
+        // Add your auth key check here if needed
+        // if (authKey !== "your-secret-key") {
+        //   return new Response("Unauthorized", { status: 401 });
+        // }
+
+        const body = await request.text();
+        
+        // Store in KV if available
+        if (env.LIVE_DATA) {
+          await env.LIVE_DATA.put("servers", body, { expirationTtl: 120 }); // 2 min TTL
+        }
+
+        return new Response("OK", {
+          headers: corsHeaders,
+        });
+      }
+    }
+
+    // =======================
+    // Health check
+    // =======================
+    if (path === "/" || path === "/health") {
+      return new Response(JSON.stringify({ 
+        status: "ok", 
+        endpoints: ["/live", "/verify"],
+        timestamp: Date.now()
+      }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    // 404 for everything else
+    return new Response("Not Found", { status: 404, headers: corsHeaders });
+  },
+};
